@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>診察の録音</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1f2433; --sub:#6b7385; --accent:#e8833a; --rec:#d93a2b; --ok:#2f7d4f; --line:#e3e6ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161c; --card:#1d2029; --ink:#eef0f5; --sub:#9aa2b4; --line:#2c303b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:24px 16px 40px; min-height:100vh; display:flex; flex-direction:column; gap:16px; }
+  h1 { font-size:20px; margin:4px 0 0; }
+  .sub { color:var(--sub); font-size:14px; line-height:1.6; margin:0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px 16px; text-align:center; }
+  #timer { font-size:56px; font-variant-numeric:tabular-nums; font-weight:600; letter-spacing:2px; margin:8px 0 20px; }
+  #btn { width:180px; height:180px; border-radius:50%; border:none; font-size:22px; font-weight:700; color:#fff; background:var(--accent); box-shadow:0 6px 20px rgba(0,0,0,.15); }
+  #btn.recording { background:var(--rec); animation:pulse 1.4s infinite; }
+  #btn:disabled { opacity:.5; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(217,58,43,.45)} 70%{box-shadow:0 0 0 22px rgba(217,58,43,0)} 100%{box-shadow:0 0 0 0 rgba(217,58,43,0)} }
+  #status { font-size:16px; line-height:1.6; min-height:3em; margin-top:18px; }
+  .ok { color:var(--ok); font-weight:700; }
+  .err { color:var(--rec); font-weight:700; }
+  progress { width:100%; height:10px; margin-top:8px; display:none; }
+  .note { font-size:13px; color:var(--sub); line-height:1.7; }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>診察の録音（AIまちなか）</h1>
+    <p class="sub">ボタンを押すと録音が始まります。診察が終わったらもう一度押してください。止めると自動で送信されます。</p>
+  </div>
+  <div class="card">
+    <div id="timer">00:00</div>
+    <button id="btn">録音開始</button>
+    <progress id="prog" value="0" max="1"></progress>
+    <div id="status"></div>
+  </div>
+  <p class="note">録音は患者さんの同意を得たうえで行ってください。<br>
+  マイクが使えない・ボタンが反応しない時は、画面右上のメニューから「Safariで開く」（Androidは「ブラウザで開く」）を選んでください。<br>
+  このリンクは30分で無効になります。</p>
+</main>
+<script>
+const GAS = "https://script.google.com/macros/s/AKfycbyyIicXIhnWSx1D-gQIudu9PyPwTX87i34WTT0mzohu2nGcD36wkLe_GSouasd5eQm3LQ/exec";
+const ticket = new URLSearchParams(location.search).get("t") || "";
+const btn = document.getElementById("btn"), timer = document.getElementById("timer"),
+      statusEl = document.getElementById("status"), prog = document.getElementById("prog");
+let rec, chunks = [], started = 0, tick, stream, mime = "";
+
+function setStatus(html, cls) { statusEl.className = cls || ""; statusEl.innerHTML = html; }
+function fmt(s) { return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); }
+if (!ticket) { btn.disabled = true; setStatus("リンクが正しくありません。LINE WORKSのBotで「録音」と送り、届いたボタンから開いてください。", "err"); }
+
+btn.onclick = async () => {
+  if (rec && rec.state === "recording") { rec.stop(); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    setStatus("マイクを使えませんでした。画面右上のメニューから「Safariで開く」を選び、マイクを許可してください。", "err");
+    return;
+  }
+  mime = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined);
+  chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = upload;
+  rec.start(1000);
+  started = Date.now();
+  btn.textContent = "停止して送信"; btn.classList.add("recording");
+  setStatus("録音中…");
+  tick = setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    timer.textContent = fmt(s);
+    if (s >= 20 * 60) rec.stop();  // 20分で自動停止
+  }, 500);
+};
+
+function b64(blob) {
+  return new Promise((ok, ng) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = ng; r.readAsDataURL(blob); });
+}
+
+async function upload() {
+  clearInterval(tick);
+  stream && stream.getTracks().forEach(t => t.stop());
+  btn.classList.remove("recording"); btn.disabled = true; btn.textContent = "送信中";
+  const seconds = Math.round((Date.now() - started) / 1000);
+  const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/mp4" });
+  const SIZE = 70000, total = Math.ceil(blob.size / SIZE);
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  prog.style.display = "block"; prog.max = total; prog.value = 0;
+  setStatus("送信しています（" + Math.ceil(blob.size / 1024) + "KB）…");
+  try {
+    for (let seq = 0; seq < total; seq++) {
+      const data = await b64(blob.slice(seq * SIZE, (seq + 1) * SIZE));
+      let res, tries = 0;
+      while (true) {
+        try {
+          res = await (await fetch(GAS + "?action=upload", { method: "POST",
+            body: JSON.stringify({ ticket, id, seq, total, mime: blob.type, seconds, data }) })).json();
+          break;
+        } catch (e) { if (++tries >= 3) throw e; await new Promise(r => setTimeout(r, 1500)); }
+      }
+      if (!res.ok) throw new Error(res.error || "送信に失敗しました");
+      prog.value = seq + 1;
+    }
+    btn.textContent = "送信済み";
+    setStatus("送信しました（" + fmt(seconds) + "）。<br>LINE WORKSに戻ると「どなたの録音ですか？」が届きます。", "ok");
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "録音開始";
+    setStatus("送信できませんでした：" + e.message + "<br>電波の良い場所で、Botで「録音」と送り直してください。", "err");
+  }
+}
+</script>
+</body>
+</html>
